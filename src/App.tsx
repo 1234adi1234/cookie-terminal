@@ -32,9 +32,9 @@ export const App: React.FC = () => {
       try {
         const [h, t, m] = await Promise.all([getChainHealth(), fetchTokens(), fetchMarkets()]);
         setHealth(h);
-        setTokens(t.tokens);
-        setMarkets(m.markets);
-        if (t.cookUsd) setCookPriceUsd(t.cookUsd);
+        setTokens(t.data.tokens);
+        setMarkets(m.data.markets);
+        if (t.data.cookUsd) setCookPriceUsd(t.data.cookUsd);
       } catch (e) {
         console.error('Initial data load error:', e);
       }

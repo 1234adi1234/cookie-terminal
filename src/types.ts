@@ -75,11 +75,22 @@ export interface EpochInfo {
   transactionCount: number;
 }
 
+export type ChainStatus = 'healthy' | 'degraded' | 'offline';
+
 export interface ChainHealth {
-  status: string;
-  coreVersion: string;
-  featureSet: number;
+  status: ChainStatus;
+  coreVersion: string | null;
+  featureSet: number | null;
   epochInfo: EpochInfo | null;
+  isFallback: boolean;
+  error: string | null;
+}
+
+export interface FetchResult<T> {
+  data: T;
+  status: ChainStatus;
+  isFallback: boolean;
+  error: string | null;
 }
 
 export interface WalletState {

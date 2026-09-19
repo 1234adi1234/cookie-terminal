@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Terminal, Play, Bot, Copy, Check, Sparkles, RefreshCw } from 'lucide-react';
 import { getChainHealth, fetchSwapQuote, fetchTokens } from '../services/cookieChain';
+import type { CookiescanToken } from '../types';
 
 export const AgentTab: React.FC = () => {
   const [selectedTool, setSelectedTool] = useState<string>('get_chain_health');
@@ -93,9 +94,9 @@ export const AgentTab: React.FC = () => {
               status: 'success',
               tool: 'fetch_tokens',
               source: 'api.cookiescan.io (Cookie DAS API)',
-              tokenCount: res.count,
-              cookUsd: res.cookUsd,
-              topTokensSample: res.tokens.slice(0, 3).map((t) => ({
+              tokenCount: res.data.count,
+              cookUsd: res.data.cookUsd,
+              topTokensSample: res.data.tokens.slice(0, 3).map((t: CookiescanToken) => ({
                 mint: t.mint,
                 symbol: t.metadata?.symbol,
                 name: t.metadata?.name,

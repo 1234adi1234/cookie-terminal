@@ -1,5 +1,13 @@
 import { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js';
-import type { CookiescanToken, CookiescanMarket, AggQuote, EpochInfo, ChainHealth } from '../types';
+import type {
+  CookiescanToken,
+  CookiescanMarket,
+  AggQuote,
+  EpochInfo,
+  ChainHealth,
+  ChainStatus,
+  FetchResult,
+} from '../types';
 
 export const COOKIE_RPC_URL = 'https://rpc.cookiescan.io';
 export const COOKIESCAN_API_URL = 'https://api.cookiescan.io';
@@ -38,80 +46,129 @@ export const POPULAR_TOKENS = [
 export const connection = new Connection(COOKIE_RPC_URL, 'confirmed');
 
 export async function getChainHealth(): Promise<ChainHealth> {
-  try {
-    const [healthRes, verRes, epochRes] = await Promise.allSettled([
-      fetch(COOKIE_RPC_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getHealth' }),
-      }).then((r) => r.json()),
-      fetch(COOKIE_RPC_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'getVersion' }),
-      }).then((r) => r.json()),
-      fetch(COOKIE_RPC_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'getEpochInfo' }),
-      }).then((r) => r.json()),
-    ]);
+  const [healthRes, verRes, epochRes] = await Promise.allSettled([
+    rpcCall('getHealth', 1),
+    rpcCall('getVersion', 2),
+    rpcCall('getEpochInfo', 3),
+  ]);
 
-    const status = healthRes.status === 'fulfilled' ? healthRes.value?.result || 'ok' : 'ok';
-    const coreVersion = verRes.status === 'fulfilled' ? verRes.value?.result?.['solana-core'] || '4.1.2' : '4.1.2';
-    const featureSet = verRes.status === 'fulfilled' ? verRes.value?.result?.['feature-set'] || 3345198602 : 3345198602;
-    const epochInfo: EpochInfo | null = epochRes.status === 'fulfilled' ? epochRes.value?.result || null : null;
+  const versionOk = verRes.status === 'fulfilled';
+  const epochOk = epochRes.status === 'fulfilled';
+  const healthOk = healthRes.status === 'fulfilled';
 
-    return {
-      status,
-      coreVersion,
-      featureSet,
-      epochInfo,
-    };
-  } catch {
-    return {
-      status: 'ok',
-      coreVersion: '4.1.2',
-      featureSet: 3345198602,
-      epochInfo: {
-        absoluteSlot: 25895000,
-        blockHeight: 25449500,
-        epoch: 59,
-        slotIndex: 407000,
-        slotsInEpoch: 432000,
-        transactionCount: 95280000,
-      },
-    };
+  let status: ChainStatus;
+  if (versionOk && epochOk && healthOk) {
+    status = 'healthy';
+  } else if (versionOk || epochOk || healthOk) {
+    status = 'degraded';
+  } else {
+    status = 'offline';
   }
+
+  const versionResult = versionOk ? verRes.value?.result : null;
+  const epochResult = epochOk ? epochRes.value?.result : null;
+
+  // A "healthy" claim requires actually receiving the core fields, not defaults.
+  if (status === 'healthy' && (!versionResult || !epochResult)) {
+    status = 'degraded';
+  }
+
+  return {
+    status,
+    coreVersion: versionResult?.['solana-core'] ?? null,
+    featureSet: versionResult?.['feature-set'] ?? null,
+    epochInfo: (epochResult as EpochInfo | null) ?? null,
+    isFallback: status !== 'healthy',
+    error: status === 'healthy' ? null : describeHealthFailure(healthRes, verRes, epochRes),
+  };
 }
 
-export async function fetchTokens(): Promise<{ count: number; cookUsd: number; tokens: CookiescanToken[] }> {
+async function rpcCall(method: string, id: number): Promise<any> {
+  const res = await fetch(COOKIE_RPC_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id, method }),
+  });
+  if (!res.ok) {
+    throw new Error(`${method} failed with HTTP ${res.status}`);
+  }
+  const json = await res.json();
+  if (json?.error) {
+    throw new Error(`${method} returned RPC error: ${JSON.stringify(json.error)}`);
+  }
+  return json;
+}
+
+function describeHealthFailure(...results: PromiseSettledResult<any>[]): string {
+  const reasons = results
+    .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+    .map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason)));
+  return reasons.length ? reasons.join('; ') : 'Incomplete RPC response';
+}
+
+export async function fetchTokens(): Promise<FetchResult<{ count: number; cookUsd: number; tokens: CookiescanToken[] }>> {
+  const empty = { count: 0, cookUsd: 0, tokens: [] as CookiescanToken[] };
   try {
     const res = await fetch(`${COOKIESCAN_API_URL}/api/tokens`);
+    if (!res.ok) {
+      return { data: empty, status: 'degraded', isFallback: true, error: `Tokens API returned HTTP ${res.status}` };
+    }
     const data = await res.json();
+    const tokens: CookiescanToken[] = Array.isArray(data?.data) ? data.data : [];
+    if (!Array.isArray(data?.data)) {
+      return { data: empty, status: 'degraded', isFallback: true, error: 'Malformed tokens payload' };
+    }
     return {
-      count: data.count || (data.data ? data.data.length : 0),
-      cookUsd: data.cookUsd || 0.0000757,
-      tokens: data.data || [],
+      data: {
+        count: typeof data.count === 'number' ? data.count : tokens.length,
+        cookUsd: typeof data.cookUsd === 'number' ? data.cookUsd : 0,
+        tokens,
+      },
+      status: 'healthy',
+      isFallback: false,
+      error: null,
     };
   } catch (err) {
-    console.error('Failed to fetch tokens from Cookiescan:', err);
-    return { count: 0, cookUsd: 0.0000757, tokens: [] };
+    return {
+      data: empty,
+      status: 'offline',
+      isFallback: true,
+      error: err instanceof Error ? err.message : 'Tokens API unreachable',
+    };
   }
 }
 
-export async function fetchMarkets(): Promise<{ marketCount: number; cookUsd: number; markets: CookiescanMarket[] }> {
+export async function fetchMarkets(): Promise<
+  FetchResult<{ marketCount: number; cookUsd: number; markets: CookiescanMarket[] }>
+> {
+  const empty = { marketCount: 0, cookUsd: 0, markets: [] as CookiescanMarket[] };
   try {
     const res = await fetch(`${COOKIESCAN_API_URL}/api/markets`);
+    if (!res.ok) {
+      return { data: empty, status: 'degraded', isFallback: true, error: `Markets API returned HTTP ${res.status}` };
+    }
     const data = await res.json();
+    const markets: CookiescanMarket[] = Array.isArray(data?.markets) ? data.markets : [];
+    if (!Array.isArray(data?.markets)) {
+      return { data: empty, status: 'degraded', isFallback: true, error: 'Malformed markets payload' };
+    }
     return {
-      marketCount: data.marketCount || (data.markets ? data.markets.length : 0),
-      cookUsd: data.cookUsd || 0.0000757,
-      markets: data.markets || [],
+      data: {
+        marketCount: typeof data.marketCount === 'number' ? data.marketCount : markets.length,
+        cookUsd: typeof data.cookUsd === 'number' ? data.cookUsd : 0,
+        markets,
+      },
+      status: 'healthy',
+      isFallback: false,
+      error: null,
     };
   } catch (err) {
-    console.error('Failed to fetch markets from Cookiescan:', err);
-    return { marketCount: 0, cookUsd: 0.0000757, markets: [] };
+    return {
+      data: empty,
+      status: 'offline',
+      isFallback: true,
+      error: err instanceof Error ? err.message : 'Markets API unreachable',
+    };
   }
 }
 
